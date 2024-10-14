@@ -55,6 +55,7 @@ import {
 	unmute as unmuteEmoji,
 	checkMuted as isEmojiMuted,
 } from "@/utility/emoji-mute.js";
+import { note } from ".storybook/fakes";
 import { haptic } from "@/utility/haptic.js";
 
 const props = defineProps<{
@@ -179,7 +180,7 @@ async function toggleReaction() {
 
 		misskeyApi("notes/reactions/create", {
 			noteId: props.noteId,
-			reaction: props.reaction,
+			reaction: selected,
 		}).then(() => {
 			const emoji = customEmojisMap.get(emojiName.value);
 			if (emoji == null && getUnicodeEmojiOrNull(props.reaction) == null) {
