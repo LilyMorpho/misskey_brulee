@@ -3,50 +3,62 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { randomUUID } from 'node:crypto';
-import * as fs from 'node:fs';
-import { Inject, Injectable } from '@nestjs/common';
-import sharp from 'sharp';
-import { sharpBmp } from '@misskey-dev/sharp-read-bmp';
-import { In, IsNull } from 'typeorm';
-import { DeleteObjectCommandInput, PutObjectCommandInput, NoSuchKey } from '@aws-sdk/client-s3';
-import { DI } from '@/di-symbols.js';
-import type { DriveFilesRepository, UsersRepository, DriveFoldersRepository, UserProfilesRepository, MiMeta } from '@/models/_.js';
-import type { Config } from '@/config.js';
-import Logger from '@/logger.js';
-import type { MiRemoteUser, MiUser } from '@/models/User.js';
-import { MiDriveFile } from '@/models/DriveFile.js';
-import { IdService } from '@/core/IdService.js';
-import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
-import { FILE_TYPE_BROWSERSAFE } from '@/const.js';
-import { IdentifiableError } from '@/misc/identifiable-error.js';
-import { contentDisposition } from '@/misc/content-disposition.js';
-import { GlobalEventService } from '@/core/GlobalEventService.js';
-import { VideoProcessingService } from '@/core/VideoProcessingService.js';
-import { ImageProcessingService } from '@/core/ImageProcessingService.js';
-import type { IImage } from '@/core/ImageProcessingService.js';
-import { QueueService } from '@/core/QueueService.js';
-import type { MiDriveFolder } from '@/models/DriveFolder.js';
-import { createTemp } from '@/misc/create-temp.js';
-import DriveChart from '@/core/chart/charts/drive.js';
-import PerUserDriveChart from '@/core/chart/charts/per-user-drive.js';
-import InstanceChart from '@/core/chart/charts/instance.js';
-import { DownloadService } from '@/core/DownloadService.js';
-import { S3Service } from '@/core/S3Service.js';
-import { InternalStorageService } from '@/core/InternalStorageService.js';
-import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.js';
-import { UserEntityService } from '@/core/entities/UserEntityService.js';
-import { FileInfoService } from '@/core/FileInfoService.js';
-import { bindThis } from '@/decorators.js';
-import { RoleService } from '@/core/RoleService.js';
-import { correctFilename } from '@/misc/correct-filename.js';
-import { isMimeImage } from '@/misc/is-mime-image.js';
-import { ModerationLogService } from '@/core/ModerationLogService.js';
-import { UtilityService } from '@/core/UtilityService.js';
+import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import { Inject, Injectable } from "@nestjs/common";
+import sharp from "sharp";
+import { sharpBmp } from "@misskey-dev/sharp-read-bmp";
+import { In, IsNull } from "typeorm";
+import {
+	DeleteObjectCommandInput,
+	PutObjectCommandInput,
+	NoSuchKey,
+} from "@aws-sdk/client-s3";
+import * as Redis from "ioredis";
+import { DI } from "@/di-symbols.js";
+import type {
+	DriveFilesRepository,
+	UsersRepository,
+	DriveFoldersRepository,
+	UserProfilesRepository,
+	MiMeta,
+} from "@/models/_.js";
+import type { Config } from "@/config.js";
+import Logger from "@/logger.js";
+import type { MiRemoteUser, MiUser } from "@/models/User.js";
+import { MiDriveFile } from "@/models/DriveFile.js";
+import { IdService } from "@/core/IdService.js";
+import { isDuplicateKeyValueError } from "@/misc/is-duplicate-key-value-error.js";
+import { FILE_TYPE_BROWSERSAFE } from "@/const.js";
+import { IdentifiableError } from "@/misc/identifiable-error.js";
+import { contentDisposition } from "@/misc/content-disposition.js";
+import { GlobalEvents, GlobalEventService } from "@/core/GlobalEventService.js";
+import { VideoProcessingService } from "@/core/VideoProcessingService.js";
+import { ImageProcessingService } from "@/core/ImageProcessingService.js";
+import type { IImage } from "@/core/ImageProcessingService.js";
+import { QueueService } from "@/core/QueueService.js";
+import type { MiDriveFolder } from "@/models/DriveFolder.js";
+import { createTemp } from "@/misc/create-temp.js";
+import DriveChart from "@/core/chart/charts/drive.js";
+import PerUserDriveChart from "@/core/chart/charts/per-user-drive.js";
+import InstanceChart from "@/core/chart/charts/instance.js";
+import { DownloadService } from "@/core/DownloadService.js";
+import { S3Service } from "@/core/S3Service.js";
+import { InternalStorageService } from "@/core/InternalStorageService.js";
+import { DriveFileEntityService } from "@/core/entities/DriveFileEntityService.js";
+import { UserEntityService } from "@/core/entities/UserEntityService.js";
+import { FileInfoService } from "@/core/FileInfoService.js";
+import { bindThis } from "@/decorators.js";
+import { RoleService } from "@/core/RoleService.js";
+import { correctFilename } from "@/misc/correct-filename.js";
+import { isMimeImage } from "@/misc/is-mime-image.js";
+import { ModerationLogService } from "@/core/ModerationLogService.js";
+import { UtilityService } from "@/core/UtilityService.js";
+import { acquireApObjectLock } from "@/misc/distributed-lock.js";
 
 type AddFileArgs = {
 	/** User who wish to add file */
-	user: { id: MiUser['id']; host: MiUser['host'] } | null;
+	user: { id: MiUser["id"]; host: MiUser["host"] } | null;
 	/** File path */
 	path: string;
 	/** Name */
@@ -74,8 +86,8 @@ type AddFileArgs = {
 
 type UploadFromUrlArgs = {
 	url: string;
-	user: { id: MiUser['id']; host: MiUser['host'] } | null;
-	folderId?: MiDriveFolder['id'] | null;
+	user: { id: MiUser["id"]; host: MiUser["host"] } | null;
+	folderId?: MiDriveFolder["id"] | null;
 	uri?: string | null;
 	sensitive?: boolean;
 	force?: boolean;
@@ -113,6 +125,12 @@ export class DriveService {
 		@Inject(DI.driveFoldersRepository)
 		private driveFoldersRepository: DriveFoldersRepository,
 
+		@Inject(DI.redisForSub)
+		private redisForSub: Redis.Redis,
+
+		@Inject(DI.redis)
+		private redisClient: Redis.Redis,
+
 		private fileInfoService: FileInfoService,
 		private userEntityService: UserEntityService,
 		private driveFileEntityService: DriveFileEntityService,
@@ -131,10 +149,11 @@ export class DriveService {
 		private instanceChart: InstanceChart,
 		private utilityService: UtilityService,
 	) {
-		const logger = new Logger('drive', 'blue');
-		this.registerLogger = logger.createSubLogger('register', 'yellow');
-		this.downloaderLogger = logger.createSubLogger('downloader');
-		this.deleteLogger = logger.createSubLogger('delete');
+		const logger = new Logger("drive", "blue");
+		this.registerLogger = logger.createSubLogger("register", "yellow");
+		this.downloaderLogger = logger.createSubLogger("downloader");
+		this.deleteLogger = logger.createSubLogger("delete");
+		this.redisForSub.on("message", this.onMessage);
 	}
 
 	/***
@@ -144,38 +163,49 @@ export class DriveService {
 	 * @param type Content-Type for original
 	 * @param hash Hash for original
 	 * @param size Size for original
+	 * @param isRemoteFile is Remote file or Local File (Serafuku Custom)
 	 */
 	@bindThis
-	private async save(file: MiDriveFile, path: string, name: string, type: string, hash: string, size: number): Promise<MiDriveFile> {
-	// thunbnail, webpublic を必要なら生成
+	private async save(
+		file: MiDriveFile,
+		path: string,
+		name: string,
+		type: string,
+		hash: string,
+		size: number,
+	): Promise<MiDriveFile> {
+		// thunbnail, webpublic を必要なら生成
 		const alts = await this.generateAlts(path, type, !file.uri);
 
 		if (this.meta.useObjectStorage) {
-		//#region ObjectStorage params
-			let [ext] = (name.match(/\.([a-zA-Z0-9_-]+)$/) ?? ['']);
+			//#region ObjectStorage params
+			let [ext] = name.match(/\.([a-zA-Z0-9_-]+)$/) ?? [""];
 
-			if (ext === '') {
-				if (type === 'image/jpeg') ext = '.jpg';
-				if (type === 'image/png') ext = '.png';
-				if (type === 'image/webp') ext = '.webp';
-				if (type === 'image/avif') ext = '.avif';
-				if (type === 'image/apng') ext = '.apng';
-				if (type === 'image/vnd.mozilla.apng') ext = '.apng';
+			if (ext === "") {
+				if (type === "image/jpeg") ext = ".jpg";
+				if (type === "image/png") ext = ".png";
+				if (type === "image/webp") ext = ".webp";
+				if (type === "image/avif") ext = ".avif";
+				if (type === "image/apng") ext = ".apng";
+				if (type === "image/vnd.mozilla.apng") ext = ".apng";
 			}
 
 			// 拡張子からContent-Typeを設定してそうな挙動を示すオブジェクトストレージ (upcloud?) も存在するので、
 			// 許可されているファイル形式でしかURLに拡張子をつけない
 			if (!FILE_TYPE_BROWSERSAFE.includes(type)) {
-				ext = '';
+				ext = "";
 			}
 
-			const baseUrl = this.meta.objectStorageBaseUrl
-				?? `${ this.meta.objectStorageUseSSL ? 'https' : 'http' }://${ this.meta.objectStorageEndpoint }${ this.meta.objectStoragePort ? `:${this.meta.objectStoragePort}` : '' }/${ this.meta.objectStorageBucket }`;
+			const baseUrl =
+				this.meta.objectStorageBaseUrl ??
+				`${this.meta.objectStorageUseSSL ? "https" : "http"}://${this.meta.objectStorageEndpoint}${this.meta.objectStoragePort ? `:${this.meta.objectStoragePort}` : ""}/${this.meta.objectStorageBucket}`;
 
 			// for original
-			const prefix = this.meta.objectStoragePrefix ? `${this.meta.objectStoragePrefix}/` : '';
+			const prefix = this.meta.objectStoragePrefix
+				? `${this.meta.objectStoragePrefix}/`
+				: "";
 			const key = `${prefix}${randomUUID()}${ext}`;
-			const url = `${ baseUrl }/${ key }`;
+			const url = `${baseUrl}/${key}`;
 
 			// for alts
 			let webpublicKey: string | null = null;
@@ -192,18 +222,34 @@ export class DriveService {
 
 			if (alts.webpublic) {
 				webpublicKey = `${prefix}webpublic-${randomUUID()}.${alts.webpublic.ext}`;
-				webpublicUrl = `${ baseUrl }/${ webpublicKey }`;
+				webpublicUrl = `${baseUrl}/${webpublicKey}`;
 
 				this.registerLogger.info(`uploading webpublic: ${webpublicKey}`);
-				uploads.push(this.upload(webpublicKey, alts.webpublic.data, alts.webpublic.type, alts.webpublic.ext, name));
+				uploads.push(
+					this.upload(
+						webpublicKey,
+						alts.webpublic.data,
+						alts.webpublic.type,
+						alts.webpublic.ext,
+						name,
+					),
+				);
 			}
 
 			if (alts.thumbnail) {
 				thumbnailKey = `${prefix}thumbnail-${randomUUID()}.${alts.thumbnail.ext}`;
-				thumbnailUrl = `${ baseUrl }/${ thumbnailKey }`;
+				thumbnailUrl = `${baseUrl}/${thumbnailKey}`;
 
 				this.registerLogger.info(`uploading thumbnail: ${thumbnailKey}`);
-				uploads.push(this.upload(thumbnailKey, alts.thumbnail.data, alts.thumbnail.type, alts.thumbnail.ext, `${name}.thumbnail`));
+				uploads.push(
+					this.upload(
+						thumbnailKey,
+						alts.thumbnail.data,
+						alts.thumbnail.type,
+						alts.thumbnail.ext,
+						`${name}.thumbnail`,
+					),
+				);
 			}
 
 			await Promise.all(uploads);
@@ -222,11 +268,21 @@ export class DriveService {
 			file.size = size;
 			file.storedInternal = false;
 
-			return await this.driveFilesRepository.insertOne(file);
-		} else { // use internal storage
+			// Re-Cache or create
+			if (await this.driveFilesRepository.exists({ where: { id: file.id } })) {
+				file.isLink = false;
+				await this.driveFilesRepository.update({ id: file.id }, file);
+				return await this.driveFilesRepository.findOneOrFail({
+					where: { id: file.id },
+				});
+			} else {
+				return await this.driveFilesRepository.insertOne(file);
+			}
+		} else {
+			// use internal storage
 			const accessKey = randomUUID();
-			const thumbnailAccessKey = 'thumbnail-' + randomUUID();
-			const webpublicAccessKey = 'webpublic-' + randomUUID();
+			const thumbnailAccessKey = "thumbnail-" + randomUUID();
+			const webpublicAccessKey = "webpublic-" + randomUUID();
 
 			const url = this.internalStorageService.saveFromPath(accessKey, path);
 
@@ -234,12 +290,18 @@ export class DriveService {
 			let webpublicUrl: string | null = null;
 
 			if (alts.thumbnail) {
-				thumbnailUrl = this.internalStorageService.saveFromBuffer(thumbnailAccessKey, alts.thumbnail.data);
+				thumbnailUrl = this.internalStorageService.saveFromBuffer(
+					thumbnailAccessKey,
+					alts.thumbnail.data,
+				);
 				this.registerLogger.info(`thumbnail stored: ${thumbnailAccessKey}`);
 			}
 
 			if (alts.webpublic) {
-				webpublicUrl = this.internalStorageService.saveFromBuffer(webpublicAccessKey, alts.webpublic.data);
+				webpublicUrl = this.internalStorageService.saveFromBuffer(
+					webpublicAccessKey,
+					alts.webpublic.data,
+				);
 				this.registerLogger.info(`web stored: ${webpublicAccessKey}`);
 			}
 
@@ -256,7 +318,16 @@ export class DriveService {
 			file.md5 = hash;
 			file.size = size;
 
-			return await this.driveFilesRepository.insertOne(file);
+			// Re-Cache or create
+			if (await this.driveFilesRepository.exists({ where: { id: file.id } })) {
+				file.isLink = false;
+				await this.driveFilesRepository.update({ id: file.id }, file);
+				return await this.driveFilesRepository.findOneOrFail({
+					where: { id: file.id },
+				});
+			} else {
+				return await this.driveFilesRepository.insertOne(file);
+			}
 		}
 	}
 
@@ -268,7 +339,7 @@ export class DriveService {
 	 */
 	@bindThis
 	public async generateAlts(path: string, type: string, generateWeb: boolean) {
-		if (type.startsWith('video/')) {
+		if (type.startsWith("video/")) {
 			if (this.config.videoThumbnailGenerator != null) {
 				// videoThumbnailGeneratorが指定されていたら動画サムネイル生成はスキップ
 				return {
@@ -278,7 +349,8 @@ export class DriveService {
 			}
 
 			try {
-				const thumbnail = await this.videoProcessingService.generateVideoThumbnail(path);
+				const thumbnail =
+					await this.videoProcessingService.generateVideoThumbnail(path);
 				return {
 					webpublic: null,
 					thumbnail,
@@ -292,8 +364,10 @@ export class DriveService {
 			}
 		}
 
-		if (!isMimeImage(type, 'sharp-convertible-image-with-bmp')) {
-			this.registerLogger.debug('web image and thumbnail not created (cannot convert by sharp)');
+		if (!isMimeImage(type, "sharp-convertible-image-with-bmp")) {
+			this.registerLogger.debug(
+				"web image and thumbnail not created (cannot convert by sharp)",
+			);
 			return {
 				webpublic: null,
 				thumbnail: null,
@@ -310,11 +384,18 @@ export class DriveService {
 			isAnimated = !!(metadata.pages && metadata.pages > 1);
 
 			satisfyWebpublic = !!(
-				type !== 'image/svg+xml' && // security reason
-				type !== 'image/avif' && // not supported by Mastodon and MS Edge
-			!(metadata.exif ?? metadata.iptc ?? metadata.xmp ?? metadata.tifftagPhotoshop) &&
-			metadata.width && metadata.width <= 2048 &&
-			metadata.height && metadata.height <= 2048
+				type !== "image/svg+xml" && // security reason
+				type !== "image/avif" && // not supported by Mastodon and MS Edge
+				!(
+					metadata.exif ??
+					metadata.iptc ??
+					metadata.xmp ??
+					metadata.tifftagPhotoshop
+				) &&
+				metadata.width &&
+				metadata.width <= 2048 &&
+				metadata.height &&
+				metadata.height <= 2048
 			);
 		} catch (err) {
 			this.registerLogger.warn(`sharp failed: ${err}`);
@@ -328,23 +409,40 @@ export class DriveService {
 		let webpublic: IImage | null = null;
 
 		if (generateWeb && !satisfyWebpublic && !isAnimated) {
-			this.registerLogger.info('creating web image');
+			this.registerLogger.info("creating web image");
 
 			try {
-				if (['image/jpeg', 'image/webp', 'image/avif'].includes(type)) {
-					webpublic = await this.imageProcessingService.convertSharpToWebp(img, 2048, 2048);
-				} else if (['image/png', 'image/bmp', 'image/svg+xml'].includes(type)) {
-					webpublic = await this.imageProcessingService.convertSharpToPng(img, 2048, 2048);
+				if (["image/jpeg", "image/webp", "image/avif"].includes(type)) {
+					webpublic = await this.imageProcessingService.convertSharpToWebp(
+						img,
+						2048,
+						2048,
+					);
+				} else if (["image/png", "image/bmp", "image/svg+xml"].includes(type)) {
+					webpublic = await this.imageProcessingService.convertSharpToPng(
+						img,
+						2048,
+						2048,
+					);
 				} else {
-					this.registerLogger.debug('web image not created (not an required image)');
+					this.registerLogger.debug(
+						"web image not created (not an required image)",
+					);
 				}
 			} catch (err) {
-				this.registerLogger.warn('web image not created (an error occurred)', err as Error);
+				this.registerLogger.warn(
+					"web image not created (an error occurred)",
+					err as Error,
+				);
 			}
 		} else {
-			if (satisfyWebpublic) this.registerLogger.info('web image not created (original satisfies webpublic)');
-			else if (isAnimated) this.registerLogger.info('web image not created (animated image)');
-			else this.registerLogger.info('web image not created (from remote)');
+			if (satisfyWebpublic)
+				this.registerLogger.info(
+					"web image not created (original satisfies webpublic)",
+				);
+			else if (isAnimated)
+				this.registerLogger.info("web image not created (animated image)");
+			else this.registerLogger.info("web image not created (from remote)");
 		}
 		// #endregion webpublic
 
@@ -353,12 +451,24 @@ export class DriveService {
 
 		try {
 			if (isAnimated) {
-				thumbnail = await this.imageProcessingService.convertSharpToWebp(sharp(path, { animated: true }), 374, 317, { alphaQuality: 70 });
+				thumbnail = await this.imageProcessingService.convertSharpToWebp(
+					sharp(path, { animated: true }),
+					374,
+					317,
+					{ alphaQuality: 70 },
+				);
 			} else {
-				thumbnail = await this.imageProcessingService.convertSharpToWebp(img, 498, 422);
+				thumbnail = await this.imageProcessingService.convertSharpToWebp(
+					img,
+					498,
+					422,
+				);
 			}
 		} catch (err) {
-			this.registerLogger.warn('thumbnail not created (an error occurred)', err as Error);
+			this.registerLogger.warn(
+				"thumbnail not created (an error occurred)",
+				err as Error,
+			);
 		}
 		// #endregion thumbnail
 
@@ -372,63 +482,84 @@ export class DriveService {
 	 * Upload to ObjectStorage
 	 */
 	@bindThis
-	private async upload(key: string, stream: fs.ReadStream | Buffer, type: string, ext?: string | null, filename?: string) {
-		if (type === 'image/apng') type = 'image/png';
-		if (!FILE_TYPE_BROWSERSAFE.includes(type)) type = 'application/octet-stream';
+	private async upload(
+		key: string,
+		stream: fs.ReadStream | Buffer,
+		type: string,
+		ext?: string | null,
+		filename?: string,
+	) {
+		if (type === "image/apng") type = "image/png";
+		if (!FILE_TYPE_BROWSERSAFE.includes(type))
+			type = "application/octet-stream";
 
 		const params = {
 			Bucket: this.meta.objectStorageBucket,
 			Key: key,
 			Body: stream,
 			ContentType: type,
-			CacheControl: 'max-age=31536000, immutable',
+			CacheControl: "max-age=31536000, immutable",
 		} as PutObjectCommandInput;
 
-		if (filename) params.ContentDisposition = contentDisposition(
-			'inline',
-			// 拡張子からContent-Typeを設定してそうな挙動を示すオブジェクトストレージ (upcloud?) も存在するので、
-			// 許可されているファイル形式でしか拡張子をつけない
-			ext ? correctFilename(filename, ext) : filename,
-		);
-		if (this.meta.objectStorageSetPublicRead) params.ACL = 'public-read';
-
-		await this.s3Service.upload(this.meta, params)
-			.then(
-				result => {
-					if ('Bucket' in result) { // CompleteMultipartUploadCommandOutput
-						this.registerLogger.debug(`Uploaded: ${result.Bucket}/${result.Key} => ${result.Location}`);
-					} else { // AbortMultipartUploadCommandOutput
-						this.registerLogger.error(`Upload Result Aborted: key = ${key}, filename = ${filename}`);
-					}
-				})
-			.catch(
-				err => {
-					this.registerLogger.error(`Upload Failed: key = ${key}, filename = ${filename}`, err);
-				},
+		if (filename)
+			params.ContentDisposition = contentDisposition(
+				"inline",
+				// 拡張子からContent-Typeを設定してそうな挙動を示すオブジェクトストレージ (upcloud?) も存在するので、
+				// 許可されているファイル形式でしか拡張子をつけない
+				ext ? correctFilename(filename, ext) : filename,
 			);
+		if (this.meta.objectStorageSetPublicRead) params.ACL = "public-read";
+
+		await this.s3Service
+			.upload(this.meta, params)
+			.then((result) => {
+				if ("Bucket" in result) {
+					// CompleteMultipartUploadCommandOutput
+					this.registerLogger.debug(
+						`Uploaded: ${result.Bucket}/${result.Key} => ${result.Location}`,
+					);
+				} else {
+					// AbortMultipartUploadCommandOutput
+					this.registerLogger.error(
+						`Upload Result Aborted: key = ${key}, filename = ${filename}`,
+					);
+				}
+			})
+			.catch((err) => {
+				this.registerLogger.error(
+					`Upload Failed: key = ${key}, filename = ${filename}`,
+					err,
+				);
+			});
 	}
 
 	// Expire oldest file (without avatar or banner) of remote user
 	@bindThis
 	private async expireOldFile(user: MiRemoteUser, driveCapacity: number) {
-		const q = this.driveFilesRepository.createQueryBuilder('file')
-			.where('file.userId = :userId', { userId: user.id })
-			.andWhere('file.isLink = FALSE');
+		const q = this.driveFilesRepository
+			.createQueryBuilder("file")
+			.where("file.userId = :userId", { userId: user.id })
+			.andWhere("file.isLink = FALSE");
 
 		if (user.avatarId) {
-			q.andWhere('file.id != :avatarId', { avatarId: user.avatarId });
+			q.andWhere("file.id != :avatarId", { avatarId: user.avatarId });
 		}
 
 		if (user.bannerId) {
-			q.andWhere('file.id != :bannerId', { bannerId: user.bannerId });
+			q.andWhere("file.id != :bannerId", { bannerId: user.bannerId });
 		}
 
 		//This selete is hard coded, be careful if change database schema
-		q.addSelect('SUM("file"."size") OVER (ORDER BY "file"."id" DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)', 'acc_usage');
-		q.orderBy('file.id', 'ASC');
+		q.addSelect(
+			'SUM("file"."size") OVER (ORDER BY "file"."id" DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)',
+			"acc_usage",
+		);
+		q.orderBy("file.id", "ASC");
 
 		const fileList = await q.getRawMany();
-		const exceedFileIds = fileList.filter((x: any) => x.acc_usage > driveCapacity).map((x: any) => x.file_id);
+		const exceedFileIds = fileList
+			.filter((x: any) => x.acc_usage > driveCapacity)
+			.map((x: any) => x.file_id);
 
 		for (const fileId of exceedFileIds) {
 			const file = await this.driveFilesRepository.findOneBy({ id: fileId });
@@ -458,27 +589,44 @@ export class DriveService {
 		ext = null,
 	}: AddFileArgs): Promise<MiDriveFile> {
 		let skipNsfwCheck = false;
-		const userRoleNSFW = user && (await this.roleService.getUserPolicies(user.id)).alwaysMarkNsfw;
+		const userRoleNSFW =
+			user && (await this.roleService.getUserPolicies(user.id)).alwaysMarkNsfw;
 		if (user == null) {
 			skipNsfwCheck = true;
 		} else if (userRoleNSFW) {
 			skipNsfwCheck = true;
 		}
-		if (this.meta.sensitiveMediaDetection === 'none') skipNsfwCheck = true;
-		if (user && this.meta.sensitiveMediaDetection === 'local' && this.userEntityService.isRemoteUser(user)) skipNsfwCheck = true;
-		if (user && this.meta.sensitiveMediaDetection === 'remote' && this.userEntityService.isLocalUser(user)) skipNsfwCheck = true;
+		if (this.meta.sensitiveMediaDetection === "none") skipNsfwCheck = true;
+		if (
+			user &&
+			this.meta.sensitiveMediaDetection === "local" &&
+			this.userEntityService.isRemoteUser(user)
+		)
+			skipNsfwCheck = true;
+		if (
+			user &&
+			this.meta.sensitiveMediaDetection === "remote" &&
+			this.userEntityService.isLocalUser(user)
+		)
+			skipNsfwCheck = true;
 
 		const info = await this.fileInfoService.getFileInfo(path, {
 			fileName: name,
 			skipSensitiveDetection: skipNsfwCheck,
-			sensitiveThreshold: // 感度が高いほどしきい値は低くすることになる
-				this.meta.sensitiveMediaDetectionSensitivity === 'veryHigh' ? 0.1 :
-				this.meta.sensitiveMediaDetectionSensitivity === 'high' ? 0.3 :
-				this.meta.sensitiveMediaDetectionSensitivity === 'low' ? 0.7 :
-				this.meta.sensitiveMediaDetectionSensitivity === 'veryLow' ? 0.9 :
-				0.5,
+			// 感度が高いほどしきい値は低くすることになる
+			sensitiveThreshold:
+				this.meta.sensitiveMediaDetectionSensitivity === "veryHigh"
+					? 0.1
+					: this.meta.sensitiveMediaDetectionSensitivity === "high"
+						? 0.3
+						: this.meta.sensitiveMediaDetectionSensitivity === "low"
+							? 0.7
+							: this.meta.sensitiveMediaDetectionSensitivity === "veryLow"
+								? 0.9
+								: 0.5,
 			sensitiveThresholdForPorn: 0.75,
-			enableSensitiveMediaDetectionForVideos: this.meta.enableSensitiveMediaDetectionForVideos,
+			enableSensitiveMediaDetectionForVideos:
+				this.meta.enableSensitiveMediaDetectionForVideos,
 		});
 		this.registerLogger.info(`${JSON.stringify(info)}`);
 
@@ -491,12 +639,14 @@ export class DriveService {
 		const detectedName = correctFilename(
 			// DriveFile.nameは256文字, validateFileNameは200文字制限であるため、
 			// extを付加してデータベースの文字数制限に当たることはまずない
-			(name && this.driveFileEntityService.validateFileName(name)) ? name : 'untitled',
+			name && this.driveFileEntityService.validateFileName(name)
+				? name
+				: "untitled",
 			ext ?? info.type.ext,
 		);
 
 		if (user && !force) {
-		// Check if there is a file with the same hash
+			// Check if there is a file with the same hash
 			const matched = await this.driveFilesRepository.findOneBy({
 				md5: info.md5,
 				userId: user.id,
@@ -507,30 +657,41 @@ export class DriveService {
 				if (sensitive && !matched.isSensitive) {
 					// The file is federated as sensitive for this time, but was federated as non-sensitive before.
 					// Therefore, update the file to sensitive.
-					await this.driveFilesRepository.update({ id: matched.id }, { isSensitive: true });
+					await this.driveFilesRepository.update(
+						{ id: matched.id },
+						{ isSensitive: true },
+					);
 					matched.isSensitive = true;
 				}
 				return matched;
 			}
 		}
 
-		this.registerLogger.debug(`ADD DRIVE FILE: user ${user?.id ?? 'not set'}, name ${detectedName}, tmp ${path}`);
+		this.registerLogger.debug(
+			`ADD DRIVE FILE: user ${user?.id ?? "not set"}, name ${detectedName}, tmp ${path}`,
+		);
 
 		//#region Check drive usage and mime type
 		if (user != null && !isLink) {
 			const isLocalUser = this.userEntityService.isLocalUser(user);
-			const isModerator = isLocalUser ? await this.roleService.isModerator(user) : false;
+			const isModerator = isLocalUser
+				? await this.roleService.isModerator(user)
+				: false;
 			if (!isModerator) {
 				const policies = await this.roleService.getUserPolicies(user.id);
 
 				const allowedMimeTypes = policies.uploadableFileTypes;
 				const isAllowed = allowedMimeTypes.some((mimeType) => {
-					if (mimeType === '*' || mimeType === '*/*') return true;
-					if (mimeType.endsWith('/*')) return info.type.mime.startsWith(mimeType.slice(0, -1));
+					if (mimeType === "*" || mimeType === "*/*") return true;
+					if (mimeType.endsWith("/*"))
+						return info.type.mime.startsWith(mimeType.slice(0, -1));
 					return info.type.mime === mimeType;
 				});
 				if (!isAllowed) {
-					throw new IdentifiableError('bd71c601-f9b0-4808-9137-a330647ced9b', `Unallowed file type: ${info.type.mime}`);
+					throw new IdentifiableError(
+						"bd71c601-f9b0-4808-9137-a330647ced9b",
+						`Unallowed file type: ${info.type.mime}`,
+					);
 				}
 
 				const driveCapacity = 1024 * 1024 * policies.driveCapacityMb;
@@ -538,21 +699,34 @@ export class DriveService {
 
 				if (maxFileSize < info.size) {
 					if (isLocalUser) {
-						throw new IdentifiableError('f9e4e5f3-4df4-40b5-b400-f236945f7073', 'Max file size exceeded.');
+						throw new IdentifiableError(
+							"f9e4e5f3-4df4-40b5-b400-f236945f7073",
+							"Max file size exceeded.",
+						);
 					}
 				}
 
 				const usage = await this.driveFileEntityService.calcDriveUsageOf(user);
 
-				this.registerLogger.debug('drive capacity override applied');
-				this.registerLogger.debug(`overrideCap: ${driveCapacity}bytes, usage: ${usage}bytes, u+s: ${usage + info.size}bytes`);
+				this.registerLogger.debug("drive capacity override applied");
+				this.registerLogger.debug(
+					`overrideCap: ${driveCapacity}bytes, usage: ${usage}bytes, u+s: ${usage + info.size}bytes`,
+				);
 
 				// If usage limit exceeded
 				if (driveCapacity < usage + info.size) {
 					if (isLocalUser) {
-						throw new IdentifiableError('c6244ed2-a39a-4e1c-bf93-f0fbd7764fa6', 'No free space.');
+						throw new IdentifiableError(
+							"c6244ed2-a39a-4e1c-bf93-f0fbd7764fa6",
+							"No free space.",
+						);
 					}
-					await this.expireOldFile(await this.usersRepository.findOneByOrFail({ id: user.id }) as MiRemoteUser, driveCapacity - info.size);
+					await this.expireOldFile(
+						(await this.usersRepository.findOneByOrFail({
+							id: user.id,
+						})) as MiRemoteUser,
+						driveCapacity - info.size,
+					);
 				}
 			}
 		}
@@ -568,7 +742,7 @@ export class DriveService {
 				userId: user ? user.id : IsNull(),
 			});
 
-			if (driveFolder == null) throw new Error('folder-not-found');
+			if (driveFolder == null) throw new Error("folder-not-found");
 
 			return driveFolder;
 		};
@@ -580,14 +754,16 @@ export class DriveService {
 		} = {};
 
 		if (info.width) {
-			properties['width'] = info.width;
-			properties['height'] = info.height;
+			properties["width"] = info.width;
+			properties["height"] = info.height;
 		}
 		if (info.orientation != null) {
-			properties['orientation'] = info.orientation;
+			properties["orientation"] = info.orientation;
 		}
 
-		const profile = user ? await this.userProfilesRepository.findOneBy({ userId: user.id }) : null;
+		const profile = user
+			? await this.userProfilesRepository.findOneBy({ userId: user.id })
+			: null;
 
 		const folder = await fetchFolder();
 
@@ -605,13 +781,22 @@ export class DriveService {
 		file.maybeSensitive = info.sensitive;
 		file.maybePorn = info.porn;
 		file.isSensitive = user
-			? this.userEntityService.isLocalUser(user) && profile!.alwaysMarkNsfw ? true :
-			sensitive ?? false
+			? this.userEntityService.isLocalUser(user) && profile!.alwaysMarkNsfw
+				? true
+				: (sensitive ?? false)
 			: false;
 
-		if (user && this.utilityService.isMediaSilencedHost(this.meta.mediaSilencedHosts, user.host)) file.isSensitive = true;
+		if (
+			user &&
+			this.utilityService.isMediaSilencedHost(
+				this.meta.mediaSilencedHosts,
+				user.host,
+			)
+		)
+			file.isSensitive = true;
 		if (info.sensitive && profile!.autoSensitive) file.isSensitive = true;
-		if (info.sensitive && this.meta.setSensitiveFlagAutomatically) file.isSensitive = true;
+		if (info.sensitive && this.meta.setSensitiveFlagAutomatically)
+			file.isSensitive = true;
 		if (userRoleNSFW) file.isSensitive = true;
 
 		if (url !== null) {
@@ -621,8 +806,8 @@ export class DriveService {
 				file.url = url;
 				// ローカルプロキシ用
 				file.accessKey = randomUUID();
-				file.thumbnailAccessKey = 'thumbnail-' + randomUUID();
-				file.webpublicAccessKey = 'webpublic-' + randomUUID();
+				file.thumbnailAccessKey = "thumbnail-" + randomUUID();
+				file.webpublicAccessKey = "webpublic-" + randomUUID();
 			}
 		}
 
@@ -640,31 +825,48 @@ export class DriveService {
 
 				file = await this.driveFilesRepository.insertOne(file);
 			} catch (err) {
-			// duplicate key error (when already registered)
+				// duplicate key error (when already registered)
 				if (isDuplicateKeyValueError(err)) {
 					this.registerLogger.info(`already registered ${file.uri}`);
 
-					file = await this.driveFilesRepository.findOneBy({
+					file = (await this.driveFilesRepository.findOneBy({
 						uri: file.uri!,
 						userId: user ? user.id : IsNull(),
-					}) as MiDriveFile;
+					})) as MiDriveFile;
 				} else {
 					this.registerLogger.error(err as Error);
 					throw err;
 				}
 			}
 		} else {
-			file = await (this.save(file, path, detectedName, info.type.mime, info.md5, info.size));
+			file = await this.save(
+				file,
+				path,
+				detectedName,
+				info.type.mime,
+				info.md5,
+				info.size,
+			);
 		}
 
 		this.registerLogger.succ(`drive file has been created ${file.id}`);
 
 		if (user) {
-			this.driveFileEntityService.pack(file, { self: true }).then(packedFile => {
-				// Publish driveFileCreated event
-				this.globalEventService.publishMainStream(user.id, 'driveFileCreated', packedFile);
-				this.globalEventService.publishDriveStream(user.id, 'fileCreated', packedFile);
-			});
+			this.driveFileEntityService
+				.pack(file, { self: true })
+				.then((packedFile) => {
+					// Publish driveFileCreated event
+					this.globalEventService.publishMainStream(
+						user.id,
+						"driveFileCreated",
+						packedFile,
+					);
+					this.globalEventService.publishDriveStream(
+						user.id,
+						"fileCreated",
+						packedFile,
+					);
+				});
 		}
 
 		this.driveChart.update(file, true);
@@ -681,14 +883,104 @@ export class DriveService {
 	}
 
 	@bindThis
-	public async updateFile(file: MiDriveFile, values: Partial<MiDriveFile>, updater: MiUser) {
-		const alwaysMarkNsfw = (await this.roleService.getUserPolicies(file.userId)).alwaysMarkNsfw;
+	private async onMessage(_: string, data: string) {
+		const obj = JSON.parse(data);
 
-		if (values.name != null && !this.driveFileEntityService.validateFileName(values.name)) {
+		if (obj.channel === "internal") {
+			const { type, body } = obj.message as GlobalEvents["internal"]["payload"];
+			switch (type) {
+				case "remoteFileCacheMiss": {
+					if (!this.meta.cacheRemoteFiles) return;
+					const fileId = body.fileId;
+					this.queueService.createReDownloadRemoteFileJob(fileId);
+					break;
+				}
+				default:
+					break;
+			}
+		}
+	}
+
+	@bindThis
+	public async reCacheFile(fileId: MiDriveFile["id"]) {
+		if (!this.meta.cacheRemoteFiles) return;
+		const unlock = await acquireApObjectLock(
+			this.redisClient,
+			`DriveFile://${fileId}`,
+		);
+
+		const file = await this.driveFilesRepository.findOne({
+			where: { id: fileId },
+		});
+		if (
+			!file ||
+			!file.uri ||
+			!file.isLink ||
+			(file.isSensitive && !this.meta.cacheRemoteSensitiveFiles)
+		) {
+			const reason =
+				!file || !file.uri || !file.isLink
+					? `File URI: ${file?.uri} File isLink: ${file?.isLink}`
+					: `Sensitive: ${file.isSensitive} and Remote Sensitive media Caching is Disabled`;
+			this.registerLogger.debug(`Skip Re-Cache (Reson): ${reason}`);
+			unlock();
+			return;
+		}
+
+		const uri = file.uri;
+		const [path, cleanup] = await createTemp();
+
+		try {
+			const { filename: name } = await this.downloadService.downloadUrl(
+				uri,
+				path,
+			);
+			const info = await this.fileInfoService.getFileInfo(path, {
+				skipSensitiveDetection: true,
+			});
+
+			const newFile = await this.save(
+				file,
+				path,
+				name,
+				info.type.mime,
+				info.md5,
+				info.size,
+				true,
+			);
+			this.registerLogger.succ(
+				`drive file has been Re-Cached ${file.src} -> ${newFile.url}`,
+			);
+		} catch (err) {
+			this.registerLogger.warn(`Fail to Re-Cache Remote file: ${err}`);
+		} finally {
+			unlock();
+			cleanup();
+		}
+	}
+
+	@bindThis
+	public async updateFile(
+		file: MiDriveFile,
+		values: Partial<MiDriveFile>,
+		updater: MiUser,
+	) {
+		const alwaysMarkNsfw = (await this.roleService.getUserPolicies(file.userId))
+			.alwaysMarkNsfw;
+
+		if (
+			values.name != null &&
+			!this.driveFileEntityService.validateFileName(values.name)
+		) {
 			throw new DriveService.InvalidFileNameError();
 		}
 
-		if (values.isSensitive !== undefined && values.isSensitive !== file.isSensitive && alwaysMarkNsfw && !values.isSensitive) {
+		if (
+			values.isSensitive !== undefined &&
+			values.isSensitive !== file.isSensitive &&
+			alwaysMarkNsfw &&
+			!values.isSensitive
+		) {
 			throw new DriveService.CannotUnmarkSensitiveError();
 		}
 
@@ -705,25 +997,39 @@ export class DriveService {
 
 		await this.driveFilesRepository.update(file.id, values);
 
-		const fileObj = await this.driveFileEntityService.pack(file.id, { self: true });
+		const fileObj = await this.driveFileEntityService.pack(file.id, {
+			self: true,
+		});
 
 		// Publish fileUpdated event
 		if (file.userId) {
-			this.globalEventService.publishDriveStream(file.userId, 'fileUpdated', fileObj);
+			this.globalEventService.publishDriveStream(
+				file.userId,
+				"fileUpdated",
+				fileObj,
+			);
 		}
 
-		if (await this.roleService.isModerator(updater) && (file.userId !== updater.id)) {
-			if (values.isSensitive !== undefined && values.isSensitive !== file.isSensitive) {
-				const user = file.userId ? await this.usersRepository.findOneByOrFail({ id: file.userId }) : null;
+		if (
+			(await this.roleService.isModerator(updater)) &&
+			file.userId !== updater.id
+		) {
+			if (
+				values.isSensitive !== undefined &&
+				values.isSensitive !== file.isSensitive
+			) {
+				const user = file.userId
+					? await this.usersRepository.findOneByOrFail({ id: file.userId })
+					: null;
 				if (values.isSensitive) {
-					this.moderationLogService.log(updater, 'markSensitiveDriveFile', {
+					this.moderationLogService.log(updater, "markSensitiveDriveFile", {
 						fileId: file.id,
 						fileUserId: file.userId,
 						fileUserUsername: user?.username ?? null,
 						fileUserHost: user?.host ?? null,
 					});
 				} else {
-					this.moderationLogService.log(updater, 'unmarkSensitiveDriveFile', {
+					this.moderationLogService.log(updater, "unmarkSensitiveDriveFile", {
 						fileId: file.id,
 						fileUserId: file.userId,
 						fileUserUsername: user?.username ?? null,
@@ -737,22 +1043,35 @@ export class DriveService {
 	}
 
 	@bindThis
-	public async moveFiles(fileIds: MiDriveFile['id'][], folderId: MiDriveFolder['id'] | null, userId: MiUser['id']) {
-		const folder = folderId ? await this.driveFoldersRepository.findOneByOrFail({
-			id: folderId,
-			userId: userId,
-		}) : null;
+	public async moveFiles(
+		fileIds: MiDriveFile["id"][],
+		folderId: MiDriveFolder["id"] | null,
+		userId: MiUser["id"],
+	) {
+		const folder = folderId
+			? await this.driveFoldersRepository.findOneByOrFail({
+					id: folderId,
+					userId: userId,
+				})
+			: null;
 
-		await this.driveFilesRepository.update({
-			id: In(fileIds),
-			userId: userId,
-		}, {
-			folderId: folder ? folder.id : null,
-		});
+		await this.driveFilesRepository.update(
+			{
+				id: In(fileIds),
+				userId: userId,
+			},
+			{
+				folderId: folder ? folder.id : null,
+			},
+		);
 	}
 
 	@bindThis
-	public async deleteFile(file: MiDriveFile, isExpired = false, deleter?: MiUser) {
+	public async deleteFile(
+		file: MiDriveFile,
+		isExpired = false,
+		deleter?: MiUser,
+	) {
 		if (file.storedInternal) {
 			this.internalStorageService.del(file.accessKey!);
 
@@ -767,11 +1086,15 @@ export class DriveService {
 			this.queueService.createDeleteObjectStorageFileJob(file.accessKey!);
 
 			if (file.thumbnailUrl) {
-				this.queueService.createDeleteObjectStorageFileJob(file.thumbnailAccessKey!);
+				this.queueService.createDeleteObjectStorageFileJob(
+					file.thumbnailAccessKey!,
+				);
 			}
 
 			if (file.webpublicUrl) {
-				this.queueService.createDeleteObjectStorageFileJob(file.webpublicAccessKey!);
+				this.queueService.createDeleteObjectStorageFileJob(
+					file.webpublicAccessKey!,
+				);
 			}
 		}
 
@@ -779,7 +1102,11 @@ export class DriveService {
 	}
 
 	@bindThis
-	public async deleteFileSync(file: MiDriveFile, isExpired = false, deleter?: MiUser) {
+	public async deleteFileSync(
+		file: MiDriveFile,
+		isExpired = false,
+		deleter?: MiUser,
+	) {
 		if (file.storedInternal) {
 			this.internalStorageService.del(file.accessKey!);
 
@@ -810,7 +1137,11 @@ export class DriveService {
 	}
 
 	@bindThis
-	private async deletePostProcess(file: MiDriveFile, isExpired = false, deleter?: MiUser) {
+	private async deletePostProcess(
+		file: MiDriveFile,
+		isExpired = false,
+		deleter?: MiUser,
+	) {
 		// リモートファイル期限切れ削除後は直リンクにする
 		if (isExpired && file.userHost !== null && file.uri != null) {
 			await this.driveFilesRepository.update(file.id, {
@@ -821,8 +1152,8 @@ export class DriveService {
 				storedInternal: false,
 				// ローカルプロキシ用
 				accessKey: randomUUID(),
-				thumbnailAccessKey: 'thumbnail-' + randomUUID(),
-				webpublicAccessKey: 'webpublic-' + randomUUID(),
+				thumbnailAccessKey: "thumbnail-" + randomUUID(),
+				webpublicAccessKey: "webpublic-" + randomUUID(),
 			});
 		} else {
 			await this.driveFilesRepository.delete(file.id);
@@ -839,12 +1170,22 @@ export class DriveService {
 		}
 
 		if (file.userId) {
-			this.globalEventService.publishDriveStream(file.userId, 'fileDeleted', file.id);
+			this.globalEventService.publishDriveStream(
+				file.userId,
+				"fileDeleted",
+				file.id,
+			);
 		}
 
-		if (deleter && await this.roleService.isModerator(deleter) && (file.userId !== deleter.id)) {
-			const user = file.userId ? await this.usersRepository.findOneByOrFail({ id: file.userId }) : null;
-			this.moderationLogService.log(deleter, 'deleteDriveFile', {
+		if (
+			deleter &&
+			(await this.roleService.isModerator(deleter)) &&
+			file.userId !== deleter.id
+		) {
+			const user = file.userId
+				? await this.usersRepository.findOneByOrFail({ id: file.userId })
+				: null;
+			this.moderationLogService.log(deleter, "deleteDriveFile", {
 				fileId: file.id,
 				fileUserId: file.userId,
 				fileUserUsername: user?.username ?? null,
@@ -863,13 +1204,19 @@ export class DriveService {
 
 			await this.s3Service.delete(this.meta, param);
 		} catch (err: any) {
-			if (err.name === 'NoSuchKey') {
-				this.deleteLogger.warn(`The object storage had no such key to delete: ${key}. Skipping this.`, err as Error);
+			if (err.name === "NoSuchKey") {
+				this.deleteLogger.warn(
+					`The object storage had no such key to delete: ${key}. Skipping this.`,
+					err as Error,
+				);
 				return;
 			} else {
-				throw new Error(`Failed to delete the file from the object storage with the given key: ${key}`, {
-					cause: err,
-				});
+				throw new Error(
+					`Failed to delete the file from the object storage with the given key: ${key}`,
+					{
+						cause: err,
+					},
+				);
 			}
 		}
 	}
@@ -892,7 +1239,10 @@ export class DriveService {
 
 		try {
 			// write content at URL to temp file
-			const { filename: name } = await this.downloadService.downloadUrl(url, path);
+			const { filename: name } = await this.downloadService.downloadUrl(
+				url,
+				path,
+			);
 
 			// If the comment is same as the name, skip comment
 			// (image.name is passed in when receiving attachment)
@@ -900,7 +1250,20 @@ export class DriveService {
 				comment = null;
 			}
 
-			const driveFile = await this.addFile({ user, path, name, comment, folderId, force, isLink, url, uri, sensitive, requestIp, requestHeaders });
+			const driveFile = await this.addFile({
+				user,
+				path,
+				name,
+				comment,
+				folderId,
+				force,
+				isLink,
+				url,
+				uri,
+				sensitive,
+				requestIp,
+				requestHeaders,
+			});
 			this.downloaderLogger.succ(`Got: ${driveFile.id}`);
 			return driveFile!;
 		} catch (err) {
