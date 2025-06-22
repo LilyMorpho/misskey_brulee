@@ -4,49 +4,68 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div :class="$style.root">
-	<div :class="$style.main">
-		<div :class="$style.body">
-			<div :class="$style.noteHeader">
-				<MkAvatar :class="$style.avatar" :user="originalNote.user" indicator link preview/>
-				<div>
-					<MkA v-user-preview="originalNote.user.id" :class="$style.name" :to="userPage(originalNote.user)">
-						<MkUserName :user="originalNote.user"/>
-					</MkA>
-					<div :class="$style.username">
-						<span><MkAcct :user="originalNote.user"/></span>
-					</div>
+	<div :class="$style.root">
+		<div :class="$style.main">
+			<div :class="$style.body">
+				<div :class="$style.noteHeader">
+					<MkAvatar
+						:class="$style.avatar"
+						:user="originalNote.user"
+						indicator
+						link
+						preview
+					/>
 					<div>
-						<span :class="$style.time">{{ i18n.ts.createdAt }}: <MkTime :time="history.createdAt" mode="detail"/>
-						</span>
+						<MkA
+							v-user-preview="originalNote.user.id"
+							:class="$style.name"
+							:to="userPage(originalNote.user)"
+						>
+							<MkUserName :user="originalNote.user" />
+						</MkA>
+						<div :class="$style.username">
+							<span><MkAcct :user="originalNote.user" /></span>
+						</div>
+						<div>
+							<span :class="$style.time"
+								>{{ i18n.ts.createdAt }}:
+								<MkTime :time="history.createdAt" mode="detail" />
+							</span>
+						</div>
 					</div>
 				</div>
+				<MkNoteHistorySubContent
+					:class="$style.body"
+					:history="history"
+					:originalNote="originalNote"
+				/>
 			</div>
-			<MkNoteHistorySubContent :class="$style.body" :history="history" :originalNote="originalNote"/>
 		</div>
 	</div>
-</div>
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue';
-import * as Misskey from 'misskey-js';
-import MkNoteHeader from './MkNoteHeader.vue';
-import MkNoteHistorySubContent from './MkNoteHistorySubContent.vue';
-import { userPage } from '@/filters/user.js';
-import { i18n } from '@/i18n.js';
+import * as Misskey from "misskey-js";
+import MkNoteHeader from "./MkNoteHeader.vue";
+import MkNoteHistorySubContent from "./MkNoteHistorySubContent.vue";
+import { userPage } from "@/filters/user.js";
+import { i18n } from "@/i18n.js";
 
-const props = withDefaults(defineProps<{
-	history: Misskey.entities.NoteHistory;
-	originalNote: Misskey.entities.Note;
-	detail?: boolean;
+const props = withDefaults(
+	defineProps<{
+		history: Misskey.entities.NoteHistory;
+		newNote: Misskey.entities.NoteHistory;
+		originalNote: Misskey.entities.Note;
+		detail?: boolean;
+		raw: boolean;
 
-	// how many notes are in between this one and the note being viewed in detail
-	index?: number;
-}>(), {
-	index: 0,
-});
-
+		// how many notes are in between this one and the note being viewed in detail
+		index?: number;
+	}>(),
+	{
+		index: 0,
+	},
+);
 </script>
 
 <style lang="scss" module>
@@ -151,7 +170,8 @@ const props = withDefaults(defineProps<{
 	padding: 0;
 }
 
-.reply, .more {
+.reply,
+.more {
 	border-left: solid 0.5px var(--divider);
 	margin-top: 10px;
 }
