@@ -111,17 +111,17 @@ function onClick(ev: PointerEvent) {
 			text: `:${props.name}:`,
 		});
 
-		if (isLocal.value) {
+		if (localEmoji.value) {
 			menuItems.push({
 				text: i18n.ts.copy,
 				icon: 'ti ti-copy',
 				action: () => {
-					copyToClipboard(`:${props.name}:`);
+					copyToClipboard(`:${customEmojiNameWithoutHost.value}:`);
 				},
 			});
 		}
 
-		if (props.menuReaction && react) {
+		if ((props.menuReaction || localEmoji.value) && react) {
 			menuItems.push({
 				text: i18n.ts.doReaction,
 				icon: 'ti ti-plus',
@@ -131,7 +131,7 @@ function onClick(ev: PointerEvent) {
 			});
 		}
 
-		if (isLocal.value) {
+		if (localEmoji.value) {
 			menuItems.push({
 				type: 'divider',
 			}, {
@@ -140,7 +140,7 @@ function onClick(ev: PointerEvent) {
 				action: async () => {
 					const { dispose } = os.popup(MkCustomEmojiDetailedDialog, {
 						emoji: await misskeyApiGet('emoji', {
-							name: customEmojiName.value,
+							name: customEmojiNameWithoutHost.value,
 						}),
 					}, {
 						closed: () => dispose(),
@@ -167,7 +167,7 @@ function onClick(ev: PointerEvent) {
 			});
 		}
 
-		if (($i?.isModerator ?? $i?.isAdmin) && isLocal.value) {
+		if (($i?.isModerator ?? $i?.isAdmin) && localEmoji.value) {
 			menuItems.push({
 				text: i18n.ts.edit,
 				icon: 'ti ti-pencil',
