@@ -51,7 +51,6 @@ import { prefer } from '@/preferences.js';
 import { DI } from '@/di.js';
 import { noteEvents } from '@/composables/use-note-capture.js';
 import { mute as muteEmoji, unmute as unmuteEmoji, checkMuted as isEmojiMuted } from '@/utility/emoji-mute.js';
-import { note } from '.storybook/fakes';
 import { haptic } from '@/utility/haptic.js';
 
 const props = defineProps<{
