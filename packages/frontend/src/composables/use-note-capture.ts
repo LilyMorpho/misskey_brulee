@@ -16,9 +16,20 @@ import { prefer } from '@/preferences.js';
 import { globalEvents } from '@/events.js';
 
 export const noteEvents = new EventEmitter<{
-	[ev: `reacted:${string}`]: (ctx: { userId: Misskey.entities.User['id']; reaction: string; emoji?: { name: string; url: string; } | null; }) => void;
-	[ev: `unreacted:${string}`]: (ctx: { userId: Misskey.entities.User['id']; reaction: string; emoji?: { name: string; url: string; } | null; }) => void;
-	[ev: `pollVoted:${string}`]: (ctx: { userId: Misskey.entities.User['id']; choice: number; }) => void;
+	[ev: `reacted:${string}`]: (ctx: {
+		userId: Misskey.entities.User['id'];
+		reaction: string;
+		emoji?: { name: string; url: string };
+	}) => void;
+	[ev: `unreacted:${string}`]: (ctx: {
+		userId: Misskey.entities.User['id'];
+		reaction: string;
+		emoji?: { name: string; url: string };
+	}) => void;
+	[ev: `pollVoted:${string}`]: (ctx: {
+		userId: Misskey.entities.User['id'];
+		choice: string;
+	}) => void;
 	[ev: `noteUpdated:${string}`]: (ctx: {
 		text: Misskey.entities.Note['text'];
 		files: Misskey.entities.Note['files'];
@@ -324,7 +335,10 @@ export function useNoteCapture(props: {
 		}
 	}
 
-	function onPollVoted(ctx: { userId: Misskey.entities.User['id']; choice: number; }): void {
+	function onPollVoted(ctx: {
+		userId: Misskey.entities.User['id'];
+		choice: string;
+	}): void {
 		const newPollVotedKey = `${ctx.userId}:${ctx.choice}`;
 		if (newPollVotedKey === latestPollVotedKey) return;
 		latestPollVotedKey = newPollVotedKey;
