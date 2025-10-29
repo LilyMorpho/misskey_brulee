@@ -78,7 +78,7 @@ const emojiName = computed(() =>
 	props.reaction.replace(/:/g, "").replace(/@\./, ""),
 );
 const emojiNameWithoutHost = computed(() =>
-	emojiName.value.replace(/@[\w.]+/, ""),
+	emojiName.value.replace(/@\w.*/, ""),
 );
 const localOrUnicodeEmoji = computed(() =>
 	props.reaction.includes(":")
@@ -88,7 +88,7 @@ const localOrUnicodeEmoji = computed(() =>
 
 const canToggle = computed(() => {
 	const emoji =
-		customEmojisMap.get(emojiName.value) ??
+		customEmojisMap.get(emojiNameWithoutHost.value) ??
 		getUnicodeEmojiOrNull(props.reaction);
 	return $i != null && emoji != null;
 });
