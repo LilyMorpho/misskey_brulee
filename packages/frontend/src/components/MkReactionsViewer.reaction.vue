@@ -31,27 +31,31 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, inject, onMounted, useTemplateRef, watch } from 'vue';
-import * as Misskey from 'misskey-js';
-import { getUnicodeEmojiOrNull } from '@@/js/emojilist.js';
-import MkCustomEmojiDetailedDialog from './MkCustomEmojiDetailedDialog.vue';
-import type { MenuItem } from '@/types/menu';
-import XDetails from '@/components/MkReactionsViewer.details.vue';
-import MkReactionIcon from '@/components/MkReactionIcon.vue';
-import * as os from '@/os.js';
-import { misskeyApi, misskeyApiGet } from '@/utility/misskey-api.js';
-import { useTooltip } from '@/composables/use-tooltip.js';
-import { $i } from '@/i.js';
-import MkReactionEffect from '@/components/MkReactionEffect.vue';
-import { i18n } from '@/i18n.js';
-import * as sound from '@/utility/sound.js';
-import { checkReactionPermissions } from '@/utility/check-reaction-permissions.js';
-import { customEmojisMap } from '@/custom-emojis.js';
-import { prefer } from '@/preferences.js';
-import { DI } from '@/di.js';
-import { noteEvents } from '@/composables/use-note-capture.js';
-import { mute as muteEmoji, unmute as unmuteEmoji, checkMuted as isEmojiMuted } from '@/utility/emoji-mute.js';
-import { haptic } from '@/utility/haptic.js';
+import { computed, inject, onMounted, useTemplateRef, watch } from "vue";
+import * as Misskey from "misskey-js";
+import { getUnicodeEmojiOrNull } from "@@/js/emojilist.js";
+import MkCustomEmojiDetailedDialog from "./MkCustomEmojiDetailedDialog.vue";
+import type { MenuItem } from "@/types/menu";
+import XDetails from "@/components/MkReactionsViewer.details.vue";
+import MkReactionIcon from "@/components/MkReactionIcon.vue";
+import * as os from "@/os.js";
+import { misskeyApi, misskeyApiGet } from "@/utility/misskey-api.js";
+import { useTooltip } from "@/composables/use-tooltip.js";
+import { $i } from "@/i.js";
+import MkReactionEffect from "@/components/MkReactionEffect.vue";
+import { i18n } from "@/i18n.js";
+import * as sound from "@/utility/sound.js";
+import { checkReactionPermissions } from "@/utility/check-reaction-permissions.js";
+import { customEmojisMap } from "@/custom-emojis.js";
+import { prefer } from "@/preferences.js";
+import { DI } from "@/di.js";
+import { noteEvents } from "@/composables/use-note-capture.js";
+import {
+	mute as muteEmoji,
+	unmute as unmuteEmoji,
+	checkMuted as isEmojiMuted,
+} from "@/utility/emoji-mute.js";
+import { haptic } from "@/utility/haptic.js";
 
 const props = defineProps<{
 	noteId: Misskey.entities.Note["id"];
