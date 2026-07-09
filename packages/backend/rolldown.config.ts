@@ -75,6 +75,7 @@ export default defineConfig((args) => {
 		'ipaddr.js',
 		'oauth2orize',
 		'file-type',
+		'@tensorflow/tfjs',
 		'@tensorflow/tfjs-node',
 		'nsfwjs',
 	];
