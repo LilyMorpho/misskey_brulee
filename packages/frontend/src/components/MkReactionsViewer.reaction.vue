@@ -55,7 +55,6 @@ import {
 	unmute as unmuteEmoji,
 	checkMuted as isEmojiMuted,
 } from "@/utility/emoji-mute.js";
-import { note } from ".storybook/fakes";
 import { haptic } from "@/utility/haptic.js";
 
 const props = defineProps<{
